@@ -1,5 +1,6 @@
 .vscode
 .env
 build
+results/
 __pycache__
 

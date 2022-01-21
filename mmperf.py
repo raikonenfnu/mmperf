@@ -233,14 +233,15 @@ def _gpu_nsys_permutation(i, path, msize, perm_name, warm_up_runs=5):
     except:
         return i, False, 0.0
 
-def sandbox_perf(file_path, use_configs=False):
+def sandbox_perf(file_path, src_dir, use_configs=False):
     try:
+        sandbox_path = src_dir+"/iree_sandbox_matmul.py"
         if use_configs == True:
-            cmd = f'python -m python.examples.matmul.iree_sandbox_matmul -config_path {file_path}'
+            cmd = f'python {sandbox_path} -config_path {file_path}'
         else:
-            cmd = f'python -m python.examples.matmul.iree_sandbox_matmul -matrix_path {file_path}'
+            cmd = f'python {sandbox_path} -matrix_path {file_path}'
         dst_f = './external/iree-llvm-sandbox'
-        result = subprocess.run(cmd, shell=True, check=True, timeout=20, cwd=dst_f)
+        result = subprocess.run(cmd, shell=True, check=True, timeout=20)
     except subprocess.TimeoutExpired:
         print("\033[31m" + "FAILED" + "\033[m")
         print("  -> Execution timed out")
@@ -250,7 +251,9 @@ def sandbox_perf(file_path, use_configs=False):
         print(f"  -> Returned error code {result.returncode}")
         return False
 
-    with open('sandbox_matmul_results.json', 'r') as f:
+    cur_dir = os.getcwd()
+    sandbox_res_path = cur_dir + "/results/sandbox_matmul_results.json"
+    with open(sandbox_res_path, 'r') as f:
         data = json.load(f)
         matrix_sizes = data[0]
         speeds = data[1]
@@ -303,6 +306,7 @@ def main(argv):
     parser = argparse.ArgumentParser()
     add_arguments(parser)
     args = parser.parse_args(argv[1:])
+    src_dir = os.path.dirname(os.path.realpath(__file__))
 
     result_dir = make_result_dir(args.results)
 
@@ -316,21 +320,17 @@ def main(argv):
     if args.sandbox:
         build_path = args.bins.parent.absolute()
         os.environ["PYTHONPATH"] = os.path.join(build_path, "mlir/tools/iree_llvm_sandbox/python_package")
+        os.environ["PYTHONPATH"] += ":"+ src_dir + "/external/iree-llvm-sandbox/python/"
+        print(os.environ["PYTHONPATH"])
         os.environ["MLIR_RUNNER_UTILS_LIB"] = os.path.join(build_path, "mlir/lib/libmlir_runner_utils.so")
         os.environ["MLIR_C_RUNNER_UTILS_LIB"] = os.path.join(build_path, "mlir/lib/libmlir_c_runner_utils.so")
-        try:
-            cmd = 'cp iree_sandbox_matmul.py ./external/iree-llvm-sandbox/python/examples/matmul'
-            subprocess.run(cmd, shell=True, check=True)
-        except Exception:
-            print("Error copying iree_sandbox_matmul.py")
-            raise
 
         if args.benchmark_path:
             file_path = os.path.join(os.getcwd(), args.benchmark_path)
-            sandbox_sizes, sandbox_speeds = sandbox_perf(file_path)
+            sandbox_sizes, sandbox_speeds = sandbox_perf(file_path, src_dir)
         if args.configs_path:
             file_path = args.configs_path
-            nodai_sandbox_sizes, nodai_sandbox_speeds = sandbox_perf(file_path, use_configs=True)
+            nodai_sandbox_sizes, nodai_sandbox_speeds = sandbox_perf(file_path, src_dir, use_configs=True)
 
     # run them in parallel and collect the results
     speeds = do_permutations(args.jobs, list(x.name for x in bin_paths), args.bins, result_dir, BENCHMARK_ENV)
@@ -392,6 +392,7 @@ def main(argv):
     x_pos = [i + 0.5*(len(binaries) - 1)*BAR_WIDTH for i in range(len(bar_ordering))]
     plt.xticks(x_pos, ['x'.join(str(d) for d in s) for s in bar_ordering], rotation=90, fontsize=5)
     plt.legend(loc='best')
+    print("svaed in ",result_dir)
     plt.savefig(result_dir / 'matmul.png', dpi=300, bbox_inches='tight')
 
     if any_error:

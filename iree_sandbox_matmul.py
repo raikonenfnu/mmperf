@@ -1,8 +1,8 @@
-from ..core.experts import *
-from ..core.harness import *
-from ..core.transforms import *
+from examples.core.experts import *
+from examples.core.harness import *
+from examples.core.transforms import *
 
-from ..contraction.definitions import *
+from examples.contraction.definitions import *
 
 import typing as tp
 import json
@@ -45,7 +45,7 @@ def doubleExpert(configs, default=False):
     configs[0]['tile_interchange'] = [0, 1, 2]
     configs[1]['tile_sizes'] = [12, 32, 1]
     configs[1]['tile_interchange'] = [1, 0, 2]
-  
+
   if default == True or 'pack_padding' not in configs[0]:
     configs[0]['pack_padding'] = [1, 1, 0]
   if default == True or 'hoist_padding' not in configs[0]:
@@ -79,6 +79,81 @@ def singleExpert2D():
                          pad=True,
                          pack_paddings=[1, 1, 0],
                          hoist_paddings=[2, 3, 0])]]
+  return all_experts
+
+def singleExpertSmall():
+  all_experts = [
+    e.print_ir(after_all=False, at_begin=False, llvm=False) for e in [
+      SingleTilingExpert('matmul_on_tensors',
+                         'linalg.generic',
+                         tile_sizes=[1, 32, 12],
+                         tile_interchange=[0, 2, 1],
+                         pad=True,
+                         pack_paddings=[0, 1, 1],
+                         hoist_paddings=[0, 3, 2])]]
+  return all_experts
+
+def doubleExpertSmall(configs, default=False):
+  if default == True:
+    # Use default config values from iree-llvm-sandbox DoubleTileAndDecompose2DLarge
+    configs[0]['tile_sizes'] = [1, 64, 48]
+    configs[0]['tile_interchange'] = [0, 1, 2]
+    configs[1]['tile_sizes'] = [1, 32, 12]
+    configs[1]['tile_interchange'] = [0, 2, 1]
+
+  if default == True or 'pack_padding' not in configs[0]:
+    configs[0]['pack_padding'] = [1, 1, 1]
+  if default == True or 'hoist_padding' not in configs[0]:
+    configs[0]['hoist_padding'] = [1, 1, 3]
+
+  all_experts = [
+    e.print_ir(after_all=False, at_begin=False, llvm=False) for e in [
+      DoubleTileAndDecompose('matmul_on_tensors',
+                             'linalg.generic',
+                             tile_sizes1=configs[0]['tile_sizes'],
+                             tile_interchange1=configs[0]['tile_interchange'],
+                             tile_sizes2=configs[1]['tile_sizes'],
+                             tile_interchange2=configs[1]['tile_interchange'],
+                             pad2=True,
+                             pack_paddings2=configs[0]['pack_padding'],
+                             hoist_paddings2=configs[0]['hoist_padding'])
+        .then(Vectorize('matmul_on_tensors', 'linalg.generic'))
+        .then(LoweringOnlyExpert('matmul_on_tensors',
+                                 'linalg.generic',
+                                 transpose_lowering='eltwise'))
+    ]]
+  return all_experts
+
+def doubleExpertMedium(configs, default=False):
+  if default == True:
+    # Use default config values from iree-llvm-sandbox DoubleTileAndDecompose2DLarge
+    configs[0]['tile_sizes'] = [128, 384, 384]
+    configs[0]['tile_interchange'] = [0, 1, 2]
+    configs[1]['tile_sizes'] = [12, 32, 1]
+    configs[1]['tile_interchange'] = [1, 0, 2]
+
+  if default == True or 'pack_padding' not in configs[0]:
+    configs[0]['pack_padding'] = [1, 1, 1]
+  if default == True or 'hoist_padding' not in configs[0]:
+    configs[0]['hoist_padding'] = [3, 2, 1]
+
+  all_experts = [
+    e.print_ir(after_all=False, at_begin=False, llvm=False) for e in [
+      DoubleTileAndDecompose('matmul_on_tensors',
+                             'linalg.generic',
+                             tile_sizes1=configs[0]['tile_sizes'],
+                             tile_interchange1=configs[0]['tile_interchange'],
+                             tile_sizes2=configs[1]['tile_sizes'],
+                             tile_interchange2=configs[1]['tile_interchange'],
+                             pad2=True,
+                             pack_paddings2=configs[0]['pack_padding'],
+                             hoist_paddings2=configs[0]['hoist_padding'])
+        .then(Vectorize('matmul_on_tensors', 'linalg.generic'))
+        .then(LoweringOnlyExpert('matmul_on_tensors',
+                                 'linalg.generic',
+                                 transpose_lowering='eltwise',
+                                 multi_reduction_lowering='innerreduction'))
+    ]]
   return all_experts
 
 def doubleExpert2D():
@@ -134,6 +209,12 @@ def path_expand(s):
   return Path(s).expanduser().resolve()
 
 
+def safe_open_w(path):
+    ''' Open "path" for writing, creating any parent directories as needed.
+    '''
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return open(path, 'w')
+
 # CHECK-NOT: FAILURE
 def main(argv):
   parser = argparse.ArgumentParser()
@@ -146,7 +227,10 @@ def main(argv):
                   "SingleTiling3D",
                   "DoubleTileAndDecompose2D",
                   "DoubleTileAndDecompose3D",
-                  "DoubleTileAndDecompose2DLarge"]
+                  "DoubleTileAndDecompose2DLarge",
+                  "SingleSmall",
+                  "DoubleSmall",
+                  "DoubleMedium"]
   speeds = []
   experts = []
   matrix_sizes = []
@@ -160,7 +244,10 @@ def main(argv):
                   singleExpert([{}, {}], True) + \
                   doubleExpert2D() + \
                   doubleExpert3D() + \
-                  doubleExpert([{}, {}], True)
+                  doubleExpert([{}, {}], True) + \
+                  singleExpertSmall() + \
+                  doubleExpertSmall([{}, {}], True) + \
+                  doubleExpertMedium([{}, {}], True)
 
     for line in all_sizes:
       if line[0] == '#':
@@ -175,6 +262,8 @@ def main(argv):
                              function_name='matmul_on_tensors')
 
       expert_gflops = results.data['gflop_per_s_per_iter'][50].values.tolist()
+      for i in range(len(expert_lists)):
+        print(expert_lists[i], expert_gflops[i])
       max_gflops = max(expert_gflops)
       speeds.append(max_gflops)
       experts.append(expert_lists[expert_gflops.index(max_gflops)])
@@ -206,7 +295,8 @@ def main(argv):
   else:
     raise ValueError("Please input matrix_path or config path")
 
-  with open('../../sandbox_matmul_results.json', 'w') as f:
+  with safe_open_w('results/sandbox_matmul_results.json') as f:
+    print('saving')
     json.dump([matrix_sizes, speeds, experts], f)
     f.close()
 
